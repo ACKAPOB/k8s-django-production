@@ -1,0 +1,31 @@
+---
+- name: Clone and build Django application
+  hosts: srv
+  become: yes
+
+  tasks:
+    - name: Clone Django application via HTTPS with token
+      git:
+        repo: https://github.com/vinhlee95/django-pg-docker-tutorial.git
+        dest: /home/ubuntu/django-pg-app
+        version: master
+        force: yes
+
+    - name: Fix Dockerfile
+      replace:
+        path: /home/ubuntu/django-pg-app/Dockerfile
+        regexp: '^re$'
+        replace: ''
+
+    - name: Build Docker image
+      command: docker build -t django-pg-app:latest /home/ubuntu/django-pg-app/
+      become_user: ubuntu
+
+    - name: Show built images
+      command: docker images django-pg-app
+      become_user: ubuntu
+      register: docker_images
+
+    - name: Display Docker images
+      debug:
+        var: docker_images.stdout

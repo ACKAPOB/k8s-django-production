@@ -1,0 +1,81 @@
+---
+- name: Setup containerd for Kubernetes
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: Stop and disable Docker
+      systemd:
+        name: docker
+        state: stopped
+        enabled: no
+
+    - name: Remove Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: absent
+
+    - name: Install containerd
+      apt:
+        name:
+          - containerd
+        state: present
+
+    - name: Configure containerd
+      copy:
+        content: |
+          version = 2
+          [plugins]
+            [plugins."io.containerd.grpc.v1.cri"]
+              [plugins."io.containerd.grpc.v1.cri".containerd]
+                discard_unpacked_layers = true
+                [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+                  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+                    runtime_type = "io.containerd.runc.v2"
+                    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+                      SystemdCgroup = true
+        dest: /etc/containerd/config.toml
+
+    - name: Create containerd directory
+      file:
+        path: /etc/containerd
+        state: directory
+
+    - name: Generate default containerd config
+      command: containerd config default
+      register: containerd_config
+      changed_when: false
+
+    - name: Save containerd config with systemd cgroup
+      copy:
+        content: |
+          version = 2
+          [plugins]
+            [plugins."io.containerd.grpc.v1.cri"]
+              [plugins."io.containerd.grpc.v1.cri".containerd]
+                discard_unpacked_layers = true
+                [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+                  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+                    runtime_type = "io.containerd.runc.v2"
+                    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+                      SystemdCgroup = true
+        dest: /etc/containerd/config.toml
+
+    - name: Start and enable containerd
+      systemd:
+        name: containerd
+        state: started
+        enabled: yes
+
+    - name: Create containerd service directory
+      file:
+        path: /etc/systemd/system/containerd.service.d
+        state: directory
+
+    - name: Restart containerd to apply config
+      systemd:
+        name: containerd
+        state: restarted

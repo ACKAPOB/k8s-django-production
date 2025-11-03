@@ -1,0 +1,146 @@
+---
+- name: Fix Kubernetes Master issues
+  hosts: k8s_master
+  become: yes
+
+  tasks:
+    - name: Install missing dependencies
+      apt:
+        name:
+          - conntrack
+          - socat
+          - ebtables
+          - ethtool
+        state: present
+
+    - name: Check what's using port 10250 (corrected command)
+      shell: ss -tlnp | grep 10250 || true
+      register: port_check
+      changed_when: false
+
+    - name: Show port 10250 usage
+      debug:
+        var: port_check.stdout
+
+    - name: Stop kubelet to free port 10250
+      systemd:
+        name: kubelet
+        state: stopped
+
+    - name: Reset Kubernetes installation
+      command: kubeadm reset -f
+      ignore_errors: yes
+
+    - name: Clean up Kubernetes directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/kubernetes
+        - /var/lib/etcd
+        - /var/lib/kubelet
+      ignore_errors: yes
+
+    - name: Recreate Kubernetes directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /etc/kubernetes
+        - /var/lib/etcd
+        - /var/lib/kubelet
+
+    - name: Configure cgroup driver for containerd
+      copy:
+        content: |
+          version = 2
+          [plugins]
+            [plugins."io.containerd.grpc.v1.cri"]
+              [plugins."io.containerd.grpc.v1.cri".containerd]
+                discard_unpacked_layers = true
+                [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+                  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+                    runtime_type = "io.containerd.runc.v2"
+                    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+                      SystemdCgroup = true
+        dest: /etc/containerd/config.toml
+
+    - name: Restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+
+    - name: Pre-pull Kubernetes images
+      command: kubeadm config images pull --cri-socket=unix:///var/run/containerd/containerd.sock
+      ignore_errors: yes
+
+    - name: Initialize Kubernetes cluster with timeout
+      command: |
+        timeout 300 kubeadm init \
+          --pod-network-cidr=10.244.0.0/16 \
+          --apiserver-advertise-address=158.160.113.176 \
+          --cri-socket=unix:///var/run/containerd/containerd.sock \
+          --ignore-preflight-errors=all
+      args:
+        creates: /etc/kubernetes/admin.conf
+      register: kubeadm_init
+      async: 350  # 350 секунд максимум
+      poll: 10
+
+    - name: Check kubeadm init result
+      debug:
+        var: kubeadm_init
+
+    - name: Setup kubectl for user if admin.conf exists
+      block:
+        - name: Check if admin.conf exists
+          stat:
+            path: /etc/kubernetes/admin.conf
+          register: admin_conf
+
+        - name: Create .kube directory
+          file:
+            path: /home/ubuntu/.kube
+            state: directory
+            owner: ubuntu
+            group: ubuntu
+            mode: '0755'
+          when: admin_conf.stat.exists
+
+        - name: Copy admin config
+          copy:
+            src: /etc/kubernetes/admin.conf
+            dest: /home/ubuntu/.kube/config
+            remote_src: yes
+            owner: ubuntu
+            group: ubuntu
+            mode: '0600'
+          when: admin_conf.stat.exists
+
+        - name: Install Flannel network plugin
+          command: kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+          environment:
+            KUBECONFIG: /home/ubuntu/.kube/config
+          when: admin_conf.stat.exists
+
+        - name: Generate join command
+          command: kubeadm token create --print-join-command
+          register: join_command
+          environment:
+            KUBECONFIG: /home/ubuntu/.kube/config
+          when: admin_conf.stat.exists
+
+        - name: Save join command
+          copy:
+            content: "{{ join_command.stdout }}"
+            dest: /home/ubuntu/join-command.sh
+            mode: '0755'
+            owner: ubuntu
+            group: ubuntu
+          when: admin_conf.stat.exists and join_command.stdout is defined
+
+        - name: Show join command
+          debug:
+            msg: "Join command: {{ join_command.stdout }}"
+          when: admin_conf.stat.exists and join_command.stdout is defined

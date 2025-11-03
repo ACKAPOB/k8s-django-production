@@ -1,0 +1,30 @@
+---
+- name: Debug Kubernetes Master
+  hosts: k8s_master
+  become: yes
+
+  tasks:
+    - name: Check if containerd is running
+      command: systemctl status containerd
+      register: containerd_status
+
+    - name: Show containerd status
+      debug:
+        var: containerd_status.stdout
+
+    - name: Check kubelet logs
+      command: journalctl -u kubelet --no-pager -n 20
+      register: kubelet_logs
+
+    - name: Show kubelet logs
+      debug:
+        var: kubelet_logs.stdout
+
+    - name: Try kubeadm init with output
+      command: kubeadm init --pod-network-cidr=10.244.0.0/16 --apiserver-advertise-address=158.160.113.176 --ignore-preflight-errors=all
+      register: kubeadm_init_result
+      ignore_errors: yes
+
+    - name: Show kubeadm init result
+      debug:
+        var: kubeadm_init_result

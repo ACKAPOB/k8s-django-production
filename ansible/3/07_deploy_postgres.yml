@@ -1,0 +1,66 @@
+---
+- name: Deploy PostgreSQL to Kubernetes
+  hosts: srv
+  become: yes
+
+  tasks:
+    - name: Create PostgreSQL deployment
+      copy:
+        content: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: postgres
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: postgres
+            template:
+              metadata:
+                labels:
+                  app: postgres
+              spec:
+                containers:
+                - name: postgres
+                  image: postgres:13
+                  ports:
+                  - containerPort: 5432
+                  env:
+                  - name: POSTGRES_DB
+                    value: "mydatabase"
+                  - name: POSTGRES_USER
+                    value: "myuser"
+                  - name: POSTGRES_PASSWORD
+                    value: "mypassword"
+
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: postgres-service
+          spec:
+            ports:
+            - port: 5432
+              targetPort: 5432
+            selector:
+              app: postgres
+        dest: /home/ubuntu/postgres.yaml
+        owner: ubuntu
+        group: ubuntu
+
+    - name: Deploy PostgreSQL
+      command: kubectl apply -f /home/ubuntu/postgres.yaml
+      become_user: ubuntu
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+
+    - name: Wait for PostgreSQL
+      command: kubectl rollout status deployment/postgres --timeout=120s
+      become_user: ubuntu
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      register: postgres_status
+      until: postgres_status.rc == 0
+      retries: 10
+      delay: 10

@@ -1,0 +1,32 @@
+---
+- name: Setup Kubernetes App Node
+  hosts: k8s_app
+  become: yes
+
+  tasks:
+    - name: Get master token
+      command: sudo cat /var/lib/rancher/k3s/server/node-token
+      register: k3s_token
+      delegate_to: "{{ k8s_master_ip }}"
+      changed_when: false
+
+    - name: Install K3S agent
+      shell: |
+        curl -sfL https://get.k3s.io | K3S_URL=https://{{ k8s_master_ip }}:6443 K3S_TOKEN={{ k3s_token.stdout }} sh -
+
+    - name: Wait for node to join (simple version)
+      command: kubectl get nodes
+      delegate_to: "{{ k8s_master_ip }}"
+      register: nodes_status
+      until: nodes_status.rc == 0 and "'Ready' in nodes_status.stdout"
+      retries: 10
+      delay: 10
+
+    - name: Show final cluster status
+      command: kubectl get nodes -o wide
+      delegate_to: "{{ k8s_master_ip }}"
+      register: final_status
+      
+    - name: Display cluster
+      debug:
+        var: final_status.stdout

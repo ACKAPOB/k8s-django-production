@@ -1,0 +1,14 @@
+---
+- import_playbook: 01_setup_k8s_master.yml
+
+- import_playbook: 02_setup_k8s_app.yml
+
+- import_playbook: 03_setup_srv.yml
+
+- import_playbook: 06_setup_registry_nodes.yml
+
+- import_playbook: 04_deploy_app.yml
+
+- import_playbook: 07_deploy_postgres.yml
+
+- import_playbook: 05_deploy_app.yml

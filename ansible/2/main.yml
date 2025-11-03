@@ -1,0 +1,128 @@
+---
+- name: Setup complete infrastructure
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Update system
+      apt:
+        update_cache: yes
+        upgrade: dist
+        cache_valid_time: 3600
+
+    - name: Install basic packages
+      apt:
+        name:
+          - curl
+          - wget
+          - gnupg
+          - software-properties-common
+          - apt-transport-https
+          - ca-certificates
+          - git
+          - vim
+          - htop
+        state: present
+
+- name: Setup Kubernetes Master with K3S
+  hosts: k8s_master
+  become: yes
+
+  tasks:
+    - name: Install K3S
+      shell: |
+        curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--tls-san 158.160.113.176 --node-external-ip 158.160.113.176" sh -
+      args:
+        creates: /etc/rancher/k3s/k3s.yaml
+
+    - name: Wait for K3S to be ready
+      command: /usr/local/bin/k3s kubectl get nodes
+      register: k3s_status
+      until: k3s_status.rc == 0
+      retries: 10
+      delay: 10
+
+    - name: Setup kubectl config
+      block:
+        - name: Create .kube directory
+          file:
+            path: /home/ubuntu/.kube
+            state: directory
+            owner: ubuntu
+            group: ubuntu
+
+        - name: Copy k3s config
+          copy:
+            src: /etc/rancher/k3s/k3s.yaml
+            dest: /home/ubuntu/.kube/config
+            remote_src: yes
+            owner: ubuntu
+            group: ubuntu
+
+        - name: Fix server address
+          replace:
+            path: /home/ubuntu/.kube/config
+            regexp: '127.0.0.1'
+            replace: '158.160.113.176'
+
+    - name: Get K3S token for nodes
+      command: sudo cat /var/lib/rancher/k3s/server/node-token
+      register: k3s_token
+      changed_when: false
+
+    - name: Save K3S token
+      debug:
+        msg: "K3S Token: {{ k3s_token.stdout }}"
+
+- name: Setup Kubernetes Nodes
+  hosts: k8s_nodes
+  become: yes
+
+  tasks:
+    - name: Install K3S agent
+      shell: |
+        curl -sfL https://get.k3s.io | K3S_URL=https://158.160.113.176:6443 K3S_TOKEN={{ hostvars['k8s_master']['k3s_token']['stdout'] }} sh -
+
+- name: Setup SRV server
+  hosts: srv
+  become: yes
+
+  tasks:
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+
+    - name: Install kubectl and helm
+      apt:
+        name:
+          - kubectl
+          - git
+        state: present
+
+    - name: Install Helm
+      shell: |
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+    - name: Copy kubeconfig from master
+      fetch:
+        src: /home/ubuntu/.kube/config
+        dest: /tmp/kubeconfig
+        flat: yes
+      delegate_to: k8s_master
+
+    - name: Setup kubectl config on SRV
+      copy:
+        src: /tmp/kubeconfig
+        dest: /home/ubuntu/.kube/config
+        owner: ubuntu
+        group: ubuntu
+
+    - name: Verify cluster access
+      command: kubectl get nodes
+      register: cluster_access
+
+    - name: Show cluster status
+      debug:
+        var: cluster_access.stdout

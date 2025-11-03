@@ -1,0 +1,27 @@
+---
+- name: Setup insecure registry on Kubernetes nodes
+  hosts: k8s_master:k8s_app
+  become: yes
+
+  tasks:
+    - name: Create registries directory
+      file:
+        path: /etc/rancher/k3s
+        state: directory
+        mode: '0755'
+
+    - name: Configure containerd for insecure registry (K3S)
+      copy:
+        content: |
+          mirrors:
+            "{{ srv_ip }}:5000":
+              endpoint:
+                - "http://{{ srv_ip }}:5000"
+        dest: /etc/rancher/k3s/registries.yaml
+      notify: restart k3s
+
+  handlers:
+    - name: restart k3s
+      systemd:
+        name: "{{ 'k3s-agent' if 'k8s_app' in group_names else 'k3s' }}"
+        state: restarted

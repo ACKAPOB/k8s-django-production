@@ -1,0 +1,82 @@
+---
+- name: Setup Kubernetes with newer version
+  hosts: k8s_master
+  become: yes
+
+  tasks:
+    - name: Install dependencies
+      apt:
+        name:
+          - conntrack
+          - socat
+          - ebtables
+          - ethtool
+          - curl
+          - wget
+        state: present
+
+    - name: Stop kubelet
+      systemd:
+        name: kubelet
+        state: stopped
+
+    - name: Clean up previous installation
+      command: kubeadm reset -f
+      ignore_errors: yes
+
+    - name: Remove old Kubernetes directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/kubernetes
+        - /var/lib/etcd
+        - /var/lib/kubelet
+      ignore_errors: yes
+
+    - name: Download latest kubeadm, kubelet, kubectl
+      get_url:
+        url: "https://dl.k8s.io/release/{{ k8s_version }}/bin/linux/amd64/{{ item }}"
+        dest: "/usr/bin/{{ item }}"
+        mode: '0755'
+      loop:
+        - kubeadm
+        - kubelet
+        - kubectl
+      vars:
+        k8s_version: "v1.30.0"  # Более новая версия
+
+    - name: Configure containerd cgroup driver
+      copy:
+        content: |
+          version = 2
+          [plugins]
+            [plugins."io.containerd.grpc.v1.cri"]
+              [plugins."io.containerd.grpc.v1.cri".containerd]
+                discard_unpacked_layers = true
+                [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+                  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+                    runtime_type = "io.containerd.runc.v2"
+                    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+                      SystemdCgroup = true
+        dest: /etc/containerd/config.toml
+
+    - name: Restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+
+    - name: Start kubelet
+      systemd:
+        name: kubelet
+        state: started
+        enabled: yes
+
+    - name: Initialize cluster
+      command: |
+        kubeadm init \
+          --pod-network-cidr=10.244.0.0/16 \
+          --apiserver-advertise-address=158.160.113.176 \
+          --cri-socket=unix:///var/run/containerd/containerd.sock
+      args:
+        creates: /etc/kubernetes/admin.conf

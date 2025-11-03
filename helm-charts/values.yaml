@@ -1,0 +1,9 @@
+django:
+  image: "158.160.120.153:5000/django-app:v1.0.2"
+  nodePort: 30080
+
+postgres:
+  enabled: true
+  database: mydatabase
+  username: myuser  
+  password: mypassword

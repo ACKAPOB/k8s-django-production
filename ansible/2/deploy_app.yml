@@ -1,0 +1,219 @@
+---
+- name: Quick Django app deployment
+  hosts: srv
+  become: yes
+
+  tasks:
+    - name: Create simple Django app directly
+      copy:
+        content: |
+          FROM python:3.9-slim
+
+          WORKDIR /app
+
+          COPY requirements.txt .
+          RUN pip install -r requirements.txt
+
+          COPY . .
+
+          CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+        dest: /home/ubuntu/Dockerfile
+        owner: ubuntu
+        group: ubuntu
+
+    - name: Create requirements.txt
+      copy:
+        content: |
+          Django==4.2
+          psycopg2-binary==2.9.6
+          gunicorn==20.1.0
+        dest: /home/ubuntu/requirements.txt
+        owner: ubuntu
+        group: ubuntu
+
+    - name: Create simple Django app
+      copy:
+        content: |
+          import os
+          import sys
+          from django.core.wsgi import get_wsgi_application
+
+          os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'myapp.settings')
+
+          application = get_wsgi_application()
+
+          if __name__ == '__main__':
+              from django.core.management import execute_from_command_line
+              execute_from_command_line(sys.argv)
+        dest: /home/ubuntu/manage.py
+        owner: ubuntu
+        group: ubuntu
+
+    - name: Create myapp directory
+      file:
+        path: /home/ubuntu/myapp
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+
+    - name: Create settings.py
+      copy:
+        content: |
+          import os
+          BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+          SECRET_KEY = 'your-secret-key-here'
+          DEBUG = True
+          ALLOWED_HOSTS = ['*']
+          INSTALLED_APPS = ['django.contrib.contenttypes', 'django.contrib.staticfiles']
+          MIDDLEWARE = []
+          ROOT_URLCONF = 'myapp.urls'
+          DATABASES = {
+              'default': {
+                  'ENGINE': 'django.db.backends.postgresql',
+                  'NAME': os.environ.get('POSTGRES_DB', 'myapp'),
+                  'USER': os.environ.get('POSTGRES_USER', 'myuser'),
+                  'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'mypassword'),
+                  'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
+                  'PORT': '5432',
+              }
+          }
+          STATIC_URL = '/static/'
+        dest: /home/ubuntu/myapp/settings.py
+        owner: ubuntu
+        group: ubuntu
+
+    - name: Create urls.py
+      copy:
+        content: |
+          from django.urls import path
+          from django.http import HttpResponse
+
+          def home(request):
+              return HttpResponse("Hello from Django App!")
+
+          urlpatterns = [
+              path('', home),
+          ]
+        dest: /home/ubuntu/myapp/urls.py
+        owner: ubuntu
+        group: ubuntu
+
+    - name: Build Docker image
+      command: docker build -t django-app:latest /home/ubuntu/
+      environment:
+        HOME: /home/ubuntu
+
+    - name: Deploy simple Kubernetes manifests
+      copy:
+        content: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: django-app
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: django-app
+            template:
+              metadata:
+                labels:
+                  app: django-app
+              spec:
+                containers:
+                - name: django
+                  image: django-app:latest
+                  ports:
+                  - containerPort: 8000
+                  env:
+                  - name: POSTGRES_DB
+                    value: "myapp"
+                  - name: POSTGRES_USER
+                    value: "myuser"
+                  - name: POSTGRES_PASSWORD
+                    value: "mypassword"
+                  - name: POSTGRES_HOST
+                    value: "postgres-service"
+
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: django-service
+          spec:
+            type: NodePort
+            ports:
+            - port: 8000
+              targetPort: 8000
+              nodePort: 30080
+            selector:
+              app: django-app
+
+          ---
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: postgres
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: postgres
+            template:
+              metadata:
+                labels:
+                  app: postgres
+              spec:
+                containers:
+                - name: postgres
+                  image: postgres:13
+                  ports:
+                  - containerPort: 5432
+                  env:
+                  - name: POSTGRES_DB
+                    value: "myapp"
+                  - name: POSTGRES_USER
+                    value: "myuser"
+                  - name: POSTGRES_PASSWORD
+                    value: "mypassword"
+                  volumeMounts:
+                  - name: postgres-data
+                    mountPath: /var/lib/postgresql/data
+                volumes:
+                - name: postgres-data
+                  emptyDir: {}
+
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: postgres-service
+          spec:
+            ports:
+            - port: 5432
+              targetPort: 5432
+            selector:
+              app: postgres
+        dest: /home/ubuntu/django-app.yaml
+        owner: ubuntu
+        group: ubuntu
+
+    - name: Deploy to Kubernetes
+      command: kubectl apply -f /home/ubuntu/django-app.yaml
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+
+    - name: Wait for pods
+      command: kubectl wait --for=condition=ready pod -l app=django-app --timeout=180s
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+
+    - name: Check status
+      command: kubectl get pods,svc
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      register: status
+
+    - name: Show status
+      debug:
+        var: status.stdout

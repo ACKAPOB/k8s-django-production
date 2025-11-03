@@ -1,0 +1,182 @@
+---
+- name: Fresh Kubernetes installation with newer version
+  hosts: k8s_master
+  become: yes
+
+  tasks:
+    - name: Clean up everything
+      block:
+        - name: Stop services
+          systemd:
+            name: "{{ item }}"
+            state: stopped
+          loop:
+            - kubelet
+            - containerd
+
+        - name: Reset kubeadm
+          command: kubeadm reset -f
+          ignore_errors: yes
+
+        - name: Remove all Kubernetes directories
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /etc/kubernetes
+            - /var/lib/etcd
+            - /var/lib/kubelet
+            - /var/lib/cni
+            - /etc/cni
+          ignore_errors: yes
+
+        - name: Remove containerd
+          apt:
+            name: containerd
+            state: absent
+          ignore_errors: yes
+
+    - name: Install Docker instead of containerd
+      apt:
+        name:
+          - docker.io
+          - docker-compose
+        state: present
+
+    - name: Start and enable Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add user to docker group
+      user:
+        name: ubuntu
+        groups: docker
+        append: yes
+
+    - name: Configure Docker for Kubernetes
+      copy:
+        content: |
+          {
+            "exec-opts": ["native.cgroupdriver=systemd"],
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "100m"
+            },
+            "storage-driver": "overlay2"
+          }
+        dest: /etc/docker/daemon.json
+
+    - name: Restart Docker
+      systemd:
+        name: docker
+        state: restarted
+
+    - name: Add Kubernetes repository for Ubuntu 24.04
+      apt_key:
+        url: https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key
+        state: present
+
+    - name: Add Kubernetes apt repository
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/trusted.gpg.d/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /"
+        state: present
+        filename: kubernetes
+
+    - name: Install Kubernetes tools
+      apt:
+        name:
+          - kubelet=1.30.0-1.1
+          - kubeadm=1.30.0-1.1
+          - kubectl=1.30.0-1.1
+        state: present
+        update_cache: yes
+
+    - name: Hold Kubernetes packages
+      dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - kubelet
+        - kubeadm
+        - kubectl
+
+    - name: Initialize Kubernetes cluster with Docker
+      command: |
+        kubeadm init \
+          --pod-network-cidr=10.244.0.0/16 \
+          --apiserver-advertise-address=158.160.113.176 \
+          --cri-socket=unix:///var/run/docker.sock \
+          --upload-certs \
+          --control-plane-endpoint=158.160.113.176
+      args:
+        creates: /etc/kubernetes/admin.conf
+      register: kubeadm_result
+      async: 600  # 10 минут
+      poll: 10
+
+    - name: Check kubeadm init result
+      debug:
+        var: kubeadm_result
+
+    - name: Setup kubectl configuration
+      block:
+        - name: Create .kube directory
+          file:
+            path: /home/ubuntu/.kube
+            state: directory
+            owner: ubuntu
+            group: ubuntu
+            mode: '0755'
+
+        - name: Copy admin config
+          copy:
+            src: /etc/kubernetes/admin.conf
+            dest: /home/ubuntu/.kube/config
+            remote_src: yes
+            owner: ubuntu
+            group: ubuntu
+            mode: '0600'
+
+        - name: Install Calico network plugin (более надежный чем Flannel)
+          command: kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+          environment:
+            KUBECONFIG: /home/ubuntu/.kube/config
+
+        - name: Wait for nodes to be ready
+          command: kubectl wait --for=condition=Ready nodes --all --timeout=300s
+          environment:
+            KUBECONFIG: /home/ubuntu/.kube/config
+          register: node_wait
+          retries: 10
+          delay: 10
+          until: node_wait.rc == 0
+
+        - name: Generate join command
+          command: kubeadm token create --print-join-command
+          register: join_command
+          environment:
+            KUBECONFIG: /home/ubuntu/.kube/config
+
+        - name: Save join command
+          copy:
+            content: "{{ join_command.stdout }}"
+            dest: /home/ubuntu/join-command.sh
+            mode: '0755'
+            owner: ubuntu
+            group: ubuntu
+
+        - name: Show cluster status
+          command: kubectl get nodes
+          environment:
+            KUBECONFIG: /home/ubuntu/.kube/config
+          register: cluster_status
+
+        - name: Display cluster status
+          debug:
+            var: cluster_status.stdout
+
+        - name: Show join command
+          debug:
+            msg: "Join command: {{ join_command.stdout }}"

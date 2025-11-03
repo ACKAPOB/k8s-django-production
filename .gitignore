@@ -1,0 +1,6 @@
+terraform.tfstate*
+terraform.tfvars
+*.backup
+inventory.ini
+secrets/
+*.key

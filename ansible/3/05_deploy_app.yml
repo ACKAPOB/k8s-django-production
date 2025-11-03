@@ -1,0 +1,89 @@
+---
+- name: Deploy Django application to Kubernetes
+  hosts: srv
+  become: yes
+
+  tasks:
+    - name: Start local Docker registry
+      docker_container:
+        name: registry
+        image: registry:2
+        state: started
+        restart_policy: always
+        ports:
+          - "5000:5000"
+
+    - name: Tag image for local registry
+      command: docker tag django-pg-app:latest {{ registry_url }}/django-pg-app:latest
+      become_user: ubuntu
+
+    - name: Push image to local registry
+      command: docker push {{ registry_url }}/django-pg-app:latest
+      become_user: ubuntu
+
+    - name: Create Kubernetes deployment with local registry
+      copy:
+        content: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: django-app
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: django-app
+            template:
+              metadata:
+                labels:
+                  app: django-app
+              spec:
+                containers:
+                - name: django
+                  image: {{ registry_url }}/django-pg-app:latest
+                  imagePullPolicy: IfNotPresent
+                  ports:
+                  - containerPort: 8000
+                  env:
+                  - name: DATABASE_URL
+                    value: "postgres://user:password@postgres-service:5432/dbname"
+
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: django-service
+          spec:
+            type: NodePort
+            ports:
+            - port: 8000
+              targetPort: 8000
+              nodePort: 30080
+            selector:
+              app: django-app
+        dest: /home/ubuntu/django-app.yaml
+        owner: ubuntu
+        group: ubuntu
+
+    - name: Deploy to Kubernetes
+      command: kubectl apply -f /home/ubuntu/django-app.yaml
+      become_user: ubuntu
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+
+    - name: Wait for deployment
+      command: kubectl rollout status deployment/django-app --timeout=180s
+      become_user: ubuntu
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+
+    - name: Check application status
+      command: kubectl get pods,svc -o wide
+      become_user: ubuntu
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      register: app_status
+
+    - name: Show application status
+      debug:
+        var: app_status.stdout

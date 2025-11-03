@@ -1,0 +1,80 @@
+---
+- name: Setup SRV server with all required tools
+  hosts: srv
+  become: yes
+
+  tasks:
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+
+    - name: Configure Docker insecure registry
+      copy:
+        content: |
+          {
+            "insecure-registries": ["{{ srv_ip }}:5000"]
+          }
+        dest: /etc/docker/daemon.json
+      notify: restart docker
+
+    - name: Start Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add user to docker group
+      user:
+        name: ubuntu
+        groups: docker
+        append: yes
+
+    - name: Install kubectl
+      get_url:
+        url: https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl
+        dest: /usr/local/bin/kubectl
+        mode: '0755'
+
+    - name: Install Helm
+      shell: |
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+    - name: Create .kube directory
+      file:
+        path: /home/ubuntu/.kube
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+
+    - name: Copy kubeconfig from master
+      fetch:
+        src: /home/ubuntu/.kube/config
+        dest: /tmp/kubeconfig
+        flat: yes
+      delegate_to: "{{ k8s_master_ip }}"
+
+    - name: Setup kubectl config
+      copy:
+        src: /tmp/kubeconfig
+        dest: /home/ubuntu/.kube/config
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+
+    - name: Verify access
+      command: kubectl get nodes
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      register: cluster_access
+      
+    - name: Show access
+      debug:
+        var: cluster_access.stdout
+
+  handlers:
+    - name: restart docker
+      systemd:
+        name: docker
+        state: restarted

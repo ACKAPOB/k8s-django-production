@@ -1,0 +1,80 @@
+---
+- name: Basic setup for all servers
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Update apt package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Upgrade system packages
+      apt:
+        upgrade: dist
+        update_cache: yes
+
+    - name: Install essential packages
+      apt:
+        name:
+          - curl
+          - wget
+          - gnupg
+          - software-properties-common
+          - apt-transport-https
+          - ca-certificates
+          - git
+          - vim
+          - htop
+          - tree
+          - net-tools
+          - python3-pip
+        state: present
+
+    - name: Set timezone to Europe/Moscow
+      timezone:
+        name: Europe/Moscow
+
+    - name: Create .ssh directory
+      file:
+        path: /home/ubuntu/.ssh
+        state: directory
+        mode: '0700'
+        owner: ubuntu
+        group: ubuntu
+
+    - name: Add SSH public key
+      authorized_key:
+        user: ubuntu
+        state: present
+        key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI..."  # Ваш ключ уже работает
+
+    - name: Disable swap immediately
+      command: swapoff -a
+      changed_when: false
+
+    - name: Comment out swap in fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*?\sswap\s+.*)$'
+        replace: '# \1'
+
+    - name: Enable kernel modules
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - br_netfilter
+        - overlay
+
+    - name: Configure sysctl for Kubernetes
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: yes
+      loop:
+        - { name: net.bridge.bridge-nf-call-iptables, value: '1' }
+        - { name: net.bridge.bridge-nf-call-ip6tables, value: '1' }
+        - { name: net.ipv4.ip_forward, value: '1' }

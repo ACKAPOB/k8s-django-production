@@ -1,0 +1,114 @@
+---
+- name: Clean K3S installation
+  hosts: k8s_master
+  become: yes
+
+  tasks:
+    - name: Clean up previous installations
+      block:
+        - name: Remove k3s if exists
+          command: /usr/local/bin/k3s-uninstall.sh
+          ignore_errors: yes
+
+        - name: Remove Docker
+          apt:
+            name:
+              - docker.io
+              - docker-compose
+            state: absent
+          ignore_errors: yes
+
+        - name: Remove containerd
+          apt:
+            name: containerd
+            state: absent
+          ignore_errors: yes
+
+        - name: Remove Kubernetes binaries
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /usr/bin/kubeadm
+            - /usr/bin/kubectl
+            - /usr/bin/kubelet
+
+        - name: Clean directories
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /etc/kubernetes
+            - /var/lib/etcd
+            - /var/lib/kubelet
+            - /var/lib/cni
+            - /etc/cni
+            - /home/ubuntu/.kube
+
+        - name: Stop services
+          systemd:
+            name: "{{ item }}"
+            state: stopped
+          loop:
+            - kubelet
+            - containerd
+            - docker
+          ignore_errors: yes
+
+    - name: Install K3S with correct parameters
+      shell: |
+        curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--tls-san 158.160.113.176 --node-external-ip 158.160.113.176" sh -
+      args:
+        creates: /etc/rancher/k3s/k3s.yaml
+
+    - name: Wait for K3S to be ready
+      command: /usr/local/bin/k3s kubectl get nodes
+      register: k3s_status
+      until: k3s_status.rc == 0
+      retries: 15
+      delay: 10
+
+    - name: Setup kubectl config for ubuntu user
+      block:
+        - name: Create .kube directory
+          file:
+            path: /home/ubuntu/.kube
+            state: directory
+            owner: ubuntu
+            group: ubuntu
+            mode: '0755'
+
+        - name: Copy k3s config
+          copy:
+            src: /etc/rancher/k3s/k3s.yaml
+            dest: /home/ubuntu/.kube/config
+            remote_src: yes
+            owner: ubuntu
+            group: ubuntu
+            mode: '0600'
+
+        - name: Fix server address in config
+          replace:
+            path: /home/ubuntu/.kube/config
+            regexp: '127.0.0.1'
+            replace: '158.160.113.176'
+
+    - name: Verify cluster access
+      command: kubectl get nodes
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      register: cluster_status
+
+    - name: Show cluster status
+      debug:
+        var: cluster_status.stdout
+
+    - name: Show cluster details
+      command: kubectl cluster-info
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      register: cluster_info
+
+    - name: Display cluster info
+      debug:
+        var: cluster_info.stdout  

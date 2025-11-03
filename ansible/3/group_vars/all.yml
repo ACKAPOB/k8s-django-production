@@ -1,0 +1,5 @@
+---
+k8s_master_ip: 46.21.246.112
+k8s_app_ip: 84.201.135.240
+srv_ip: 130.193.38.182
+registry_url: "{{ srv_ip }}:5000"
